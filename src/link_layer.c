@@ -5,8 +5,21 @@
 #include "link_layer.h"
 #include "serial_port.h"
 
+#include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
+
+#define FALSE 0
+#define TRUE 1
+
+int alarmEnabled = FALSE;
+
+void alarmHandler(int signal)
+{
+    alarmEnabled = FALSE;
+
+}
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -25,7 +38,10 @@ int llOpenTx(LinkLayer llParameters)
     }
 
     printf("Serial port %s opened\n", llParameters.serialPort);
-    
+
+    struct sigaction sa = {0};
+    sa.sa_handler = &alarmHandler;
+
     for (int i = 0; i < llParameters.nRetransmissions; i++)
     {
         unsigned char set[5] = {
@@ -39,17 +55,29 @@ int llOpenTx(LinkLayer llParameters)
         int bytes = writeBytesSerialPort(set, sizeof(set));
         printf("%d bytes written to serial port\n", bytes);
 
+        sigaction(SIGALRM, &sa, NULL);
+        alarm(llParameters.timeout);
+        alarmEnabled = TRUE;
+
         unsigned char ua[5] = {0};
         int index = 0;
         unsigned char byte;
 
         while (1)
         {
+            if (alarmEnabled == FALSE)
+            {
+                printf("Timeout waiting for UA after %d seconds\n", llParameters.timeout);
+                alarm(0);
+                break;
+            }
+
             int bytes = readByteSerialPort(&byte);
 
             if (bytes < 0)
             {
                 perror("readByteSerialPort");
+                alarm(0);
                 return -1;
             }
 
@@ -78,6 +106,7 @@ int llOpenTx(LinkLayer llParameters)
                     {
                         printf("UA received: %02X %02X %02X %02X %02X\n",
                                ua[0], ua[1], ua[2], ua[3], ua[4]);
+                        alarm(0);
                         return 0;
                     }
 
@@ -87,7 +116,7 @@ int llOpenTx(LinkLayer llParameters)
             }
         }
     }
-    
+
     unsigned char buf[5] = {
         0x7E,
         0x03,
@@ -95,9 +124,9 @@ int llOpenTx(LinkLayer llParameters)
         0x03 ^ 0x03,
         0x7E,
     };
-    
+
     int bytes = writeBytesSerialPort(buf, sizeof(buf));
-    
+
     return 0;
 }
 
