@@ -86,6 +86,8 @@ int readControlFrame(unsigned char expectedA, unsigned char expectedC){
                 if (byte == 0x7E) state = STOP;
                 else state = START;
                 break;
+            default:
+                break;
         }
     }
 
