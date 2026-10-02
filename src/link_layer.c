@@ -13,26 +13,92 @@
 #define FALSE 0
 #define TRUE 1
 
-int alarmEnabled = FALSE;
-
-void alarmHandler(int signal)
-{
-    alarmEnabled = FALSE;
-
-}
-
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 #define BUF_SIZE 256
 
+static int alarmEnabled = FALSE;
+
+static void alarmHandler(int signal){
+    alarmEnabled = FALSE;
+}
+
+static const unsigned char setFrame[5] = {
+    0x7E,
+    0x03,
+    0x03,
+    0x03 ^ 0x03,
+    0x7E,
+};
+
+static const unsigned char uaFrame[5] = {
+    0x7E,
+    0x01,
+    0x07,
+    0x01 ^ 0x07,
+    0x7E,
+};
+
+typedef enum{
+    START,
+    FLAG,
+    ADDRESS,
+    CONTROL,
+    BCC,
+    STOP
+} State;
+
+int readControlFrame(unsigned char expectedA, unsigned char expectedC){
+    State state = START;
+    unsigned char byte;
+
+    while (state != STOP){
+        if (alarmEnabled == FALSE) return -1;
+        
+        int bytes = readByteSerialPort(&byte);
+        if (bytes < 0) {
+            if (alarmEnabled == FALSE) return -1; 
+            perror("readByteSerialPort");
+            return -1;
+        }
+        if (bytes == 0) continue;
+
+        switch (state){
+            case START:
+                if (byte == 0x7E) state = FLAG;
+                break;
+            case FLAG:
+                if (byte == expectedA) state = ADDRESS;
+                else if (byte == 0x7E) state = FLAG;
+                else state = START;
+                break;
+            case ADDRESS:
+                if (byte == expectedC) state = CONTROL;
+                else if (byte == 0x7E) state = FLAG;
+                else state = START;
+                break;
+            case CONTROL:
+                if (byte == (expectedA ^ expectedC)) state = BCC;
+                else if (byte == 0x7E) state = FLAG;
+                else state = START;
+                break;
+            case BCC:
+                if (byte == 0x7E) state = STOP;
+                else state = START;
+                break;
+        }
+    }
+
+    return 0;
+}
+
+
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
-int llOpenTx(LinkLayer llParameters)
-{
+int llOpenTx(LinkLayer llParameters){
 
-    if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
-    {
+    if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0){
         perror("openSerialPort");
         return -1;
     }
@@ -41,172 +107,53 @@ int llOpenTx(LinkLayer llParameters)
 
     struct sigaction sa = {0};
     sa.sa_handler = &alarmHandler;
+    sigaction(SIGALRM, &sa, NULL);
 
-    for (int i = 0; i < llParameters.nRetransmissions; i++)
-    {
-        unsigned char set[5] = {
-            0x7E,
-            0x03,
-            0x03,
-            0x03 ^ 0x03,
-            0x7E,
-        };
+    for (int i = 0; i < llParameters.nRetransmissions; i++){
 
-        int bytes = writeBytesSerialPort(set, sizeof(set));
+        int bytes = writeBytesSerialPort(setFrame, sizeof(setFrame));
         printf("%d bytes written to serial port\n", bytes);
 
-        sigaction(SIGALRM, &sa, NULL);
         alarm(llParameters.timeout);
         alarmEnabled = TRUE;
 
-        unsigned char ua[5] = {0};
-        int index = 0;
-        unsigned char byte;
-
-        while (1)
-        {
-            if (alarmEnabled == FALSE)
-            {
-                printf("Timeout waiting for UA after %d seconds\n", llParameters.timeout);
-                alarm(0);
-                break;
-            }
-
-            int bytes = readByteSerialPort(&byte);
-
-            if (bytes < 0)
-            {
-                perror("readByteSerialPort");
-                alarm(0);
-                return -1;
-            }
-
-            if (bytes == 0)
-            {
-                continue;
-            }
-
-            if (byte == 0x7E && index == 0)
-            {
-                ua[index] = byte;
-                index++;
-                continue;
-            }
-
-            if (index > 0)
-            {
-                ua[index] = byte;
-                index++;
-
-                if (index == 5)
-                {
-                    if (ua[0] == 0x7E && ua[4] == 0x7E &&
-                        ua[1] == 0x01 &&
-                        (ua[1] ^ ua[2]) == ua[3])
-                    {
-                        printf("UA received: %02X %02X %02X %02X %02X\n",
-                               ua[0], ua[1], ua[2], ua[3], ua[4]);
-                        alarm(0);
-                        return 0;
-                    }
-
-                    index = 0;
-                    memset(ua, 0, sizeof(ua));
-                }
-            }
-        }
+        if (readControlFrame(uaFrame[1], uaFrame[2]) == 0){
+            alarm(0);
+            printf("UA recebido com sucesso!\n");
+            return 0;
+        }        
+        
     }
 
-    unsigned char buf[5] = {
-        0x7E,
-        0x03,
-        0x03,
-        0x03 ^ 0x03,
-        0x7E,
-    };
-
-    int bytes = writeBytesSerialPort(buf, sizeof(buf));
-
-    return 0;
+    return -1;
 }
 
-int llOpenRx(LinkLayer llParameters)
-{
-    if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0)
-    {
+int llOpenRx(LinkLayer llParameters){
+    
+    if (openSerialPort(llParameters.serialPort, llParameters.baudRate) < 0){
         perror("openSerialPort");
         return -1;
     }
 
     printf("Serial port %s opened\n", llParameters.serialPort);
 
-    unsigned char frame[5] = {0};
-    int index = 0;
-    unsigned char byte;
+    alarmEnabled = TRUE; // Por causa da função auxiliar
 
-    while (1)
-    {
-        int bytes = readByteSerialPort(&byte);
-
-        if (bytes < 0)
-        {
-            perror("readByteSerialPort");
-            return -1;
-        }
-
-        if (bytes == 0)
-        {
-            continue;
-        }
-
-        if (byte == 0x7E && index == 0)
-        {
-            frame[index] = byte;
-            index++;
-            continue;
-        }
-
-        if (index > 0)
-        {
-            frame[index] = byte;
-            index++;
-
-            if (index == 5)
-            {
-                if (frame[0] == 0x7E && frame[4] == 0x7E &&
-                    frame[1] == 0x03 &&
-                    (frame[1] ^ frame[2]) == frame[3])
-                {
-                    printf("Trama recebida: %02X %02X %02X %02X %02X\n",
-                           frame[0], frame[1], frame[2], frame[3], frame[4]);
-
-                    unsigned char ua[5] = {
-                        0x7E,
-                        0x01,
-                        0x07,
-                        0x01 ^ 0x07,
-                        0x7E,
-                    };
-
-                    writeBytesSerialPort(ua, sizeof(ua));
-                    printf("UA enviado\n");
-                    break;
-                }
-
-                index = 0;
-                memset(frame, 0, sizeof(frame));
-            }
-        }
+    if (readControlFrame(setFrame[1], setFrame[2]) == 0) {
+        printf("SET recebido com sucesso!\n");
+        writeBytesSerialPort(uaFrame, sizeof(uaFrame));
+        printf("UA enviado de volta!\n");
+        alarmEnabled = FALSE;
+        return 0;
     }
 
-    return 0;
+    return -1;
 }
 
 ////////////////////////////////////////////////
 // LLSEND
 ////////////////////////////////////////////////
-int llSend(const unsigned char *buf, int bufSize)
-{
+int llSend(const unsigned char *buf, int bufSize){
     // TODO: Implement this function
     int bytes = writeBytesSerialPort(buf, bufSize);
     printf("%d bytes written to serial port\n", bytes);
@@ -217,8 +164,7 @@ int llSend(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 // LLRECEIVE
 ////////////////////////////////////////////////
-int llReceive(unsigned char *packet)
-{
+int llReceive(unsigned char *packet){
     // TODO: Implement this function
 
     return 0;
@@ -227,10 +173,8 @@ int llReceive(unsigned char *packet)
 ////////////////////////////////////////////////
 // LLCLOSE
 ////////////////////////////////////////////////
-int llCloseTx()
-{
-    if (closeSerialPort() < 0)
-    {
+int llCloseTx(){
+    if (closeSerialPort() < 0){
         perror("closeSerialPort");
         return -1;
     }
@@ -240,10 +184,8 @@ int llCloseTx()
     return 0;
 }
 
-int llCloseRx()
-{
-    if (closeSerialPort() < 0)
-    {
+int llCloseRx(){
+    if (closeSerialPort() < 0){
         perror("closeSerialPort");
         return -1;
     }

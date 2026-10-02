@@ -18,32 +18,23 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     };
     strcpy(llParameters.serialPort, serialPort);
 
-    if (strcmp(role, "tx") == 0)
-    {
-        if (llOpenTx(llParameters) < 0)
-        {
-            return;
-        }
+    if (strcmp(role, "tx") == 0){
+        
+        if (llOpenTx(llParameters) < 0) return;
 
         llSend((const unsigned char *)filename, strlen(filename));
 
         llCloseTx();
     }
-    else if (strcmp(role, "rx") == 0)
-    {
-        unsigned char packet[5] = {0};
+    else if (strcmp(role, "rx") == 0){
 
-        if (llOpenRx(llParameters) < 0)
-        {
-            return;
-        }
+        if (llOpenRx(llParameters) < 0) return;
 
-        llReceive(packet);
+        //llReceive(TODO);
         
         llCloseRx();
     }
-    else
-    {
+    else{
         printf("Invalid role: %s. Must be 'tx' or 'rx'.\n", role);
         return;
     }
