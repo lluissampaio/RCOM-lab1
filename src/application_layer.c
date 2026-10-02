@@ -11,10 +11,6 @@
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
                       int nTries, int timeout, const char *filename)
 {
-    // ----------------------------------------------------
-    // TODO: Adapt and extend this code according to the specifications of the project.
-    // ----------------------------------------------------
-
     LinkLayer llParameters = {
         .baudRate = baudRate,
         .nRetransmissions = nTries,
@@ -24,11 +20,33 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
     if (strcmp(role, "tx") == 0)
     {
-        llOpenTx(llParameters);
+        if (llOpenTx(llParameters) < 0)
+        {
+            return;
+        }
+
+        unsigned char frame[5] = {
+            0x7E,
+            0x03,
+            0x07,
+            0x03 ^ 0x07,
+            0x7E,
+        };
+
+        llSend(frame, sizeof(frame));
+        llCloseTx();
     }
     else if (strcmp(role, "rx") == 0)
     {
-        llOpenRx(llParameters);
+        unsigned char packet[5] = {0};
+
+        if (llOpenRx(llParameters) < 0)
+        {
+            return;
+        }
+
+        llReceive(packet);
+        llCloseRx();
     }
     else
     {
