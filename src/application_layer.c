@@ -25,6 +25,8 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             return;
         }
 
+        llsend((const unsigned char *)filename, strlen(filename));
+
         llCloseTx();
     }
     else if (strcmp(role, "rx") == 0)
@@ -37,6 +39,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         }
 
         llReceive(packet);
+        
         llCloseRx();
     }
     else

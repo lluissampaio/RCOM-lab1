@@ -26,6 +26,68 @@ int llOpenTx(LinkLayer llParameters)
 
     printf("Serial port %s opened\n", llParameters.serialPort);
     
+    for (int i = 0; i < llParameters.nRetransmissions; i++)
+    {
+        unsigned char set[5] = {
+            0x7E,
+            0x03,
+            0x03,
+            0x03 ^ 0x03,
+            0x7E,
+        };
+
+        int bytes = writeBytesSerialPort(set, sizeof(set));
+        printf("%d bytes written to serial port\n", bytes);
+
+        unsigned char ua[5] = {0};
+        int index = 0;
+        unsigned char byte;
+
+        while (1)
+        {
+            int bytes = readByteSerialPort(&byte);
+
+            if (bytes < 0)
+            {
+                perror("readByteSerialPort");
+                return -1;
+            }
+
+            if (bytes == 0)
+            {
+                continue;
+            }
+
+            if (byte == 0x7E && index == 0)
+            {
+                ua[index] = byte;
+                index++;
+                continue;
+            }
+
+            if (index > 0)
+            {
+                ua[index] = byte;
+                index++;
+
+                if (index == 5)
+                {
+                    if (ua[0] == 0x7E && ua[4] == 0x7E &&
+                        ua[1] == 0x01 &&
+                        (ua[1] ^ ua[2]) == ua[3])
+                    {
+                        printf("UA received: %02X %02X %02X %02X %02X\n",
+                               ua[0], ua[1], ua[2], ua[3], ua[4]);
+                        return 0;
+                    }
+
+                    index = 0;
+                    memset(ua, 0, sizeof(ua));
+                }
+            }
+        }
+    }
+    
     unsigned char buf[5] = {
         0x7E,
         0x03,
