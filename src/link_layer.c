@@ -34,7 +34,7 @@ int llOpenTx(LinkLayer llParameters)
         0x7E,
     };
     
-    int bytes = writeBytesSerialPort(buf, bufSize);
+    int bytes = writeBytesSerialPort(buf, sizeof(buf));
     
     return 0;
 }
