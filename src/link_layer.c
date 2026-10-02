@@ -25,7 +25,17 @@ int llOpenTx(LinkLayer llParameters)
     }
 
     printf("Serial port %s opened\n", llParameters.serialPort);
-
+    
+    unsigned char buf[5] = {
+        0x7E,
+        0x03,
+        0x07,
+        0x03 ^ 0x07,
+        0x7E,
+    };
+    
+    int bytes = writeBytesSerialPort(buf, bufSize);
+    
     return 0;
 }
 

@@ -25,15 +25,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             return;
         }
 
-        unsigned char frame[5] = {
-            0x7E,
-            0x03,
-            0x07,
-            0x03 ^ 0x07,
-            0x7E,
-        };
-
-        llSend(frame, sizeof(frame));
         llCloseTx();
     }
     else if (strcmp(role, "rx") == 0)
