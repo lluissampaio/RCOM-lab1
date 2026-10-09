@@ -2,6 +2,8 @@
 //
 // Link layer protocol implementation
 
+#define _POSIX_SOURCE 1 // POSIX compliant source
+
 #include "link_layer.h"
 #include "serial_port.h"
 
@@ -9,13 +11,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #define FALSE 0
 #define TRUE 1
 
 // MISC
-#define _POSIX_SOURCE 1 // POSIX compliant source
 #define BUF_SIZE 256
+
+#define FLAG 0x7E
+#define ESC  0X7D
 
 static int alarmEnabled = FALSE;
 
@@ -24,31 +29,32 @@ static void alarmHandler(int signal){
 }
 
 static const unsigned char setFrame[5] = {
-    0x7E,
+    FLAG,
     0x03,
     0x03,
     0x03 ^ 0x03,
-    0x7E,
+    FLAG,
 };
 
 static const unsigned char uaFrame[5] = {
-    0x7E,
+    FLAG,
     0x01,
     0x07,
     0x01 ^ 0x07,
-    0x7E,
+    FLAG,
 };
 
-typedef enum{
-    START,
-    FLAG,
-    ADDRESS,
-    CONTROL,
-    BCC,
-    STOP
-} State;
+static void response_frame(unsigned char* res, const unsigned char control, const bool error){
+    res[0]= FLAG;
+    res[1]= 0x03;
+    res[4]= FLAG;
+    if (control==0x00) res[2] = error ? 0x54 : 0xAB;
+    else if (control==0x80) res[2] = error ? 0x55 : 0xAA;
+    res[3] = res[1] ^ res[2];
+}
 
-int readControlFrame(unsigned char expectedA, unsigned char expectedC){
+static int readControlFrame(unsigned char expectedA, unsigned char expectedC){
+    typedef enum{START, FLAG_RCV, ADDRESS_RCV, CONTROL_RCV, BCC_RCV, STOP} State;
     State state = START;
     unsigned char byte;
 
@@ -65,25 +71,25 @@ int readControlFrame(unsigned char expectedA, unsigned char expectedC){
 
         switch (state){
             case START:
-                if (byte == 0x7E) state = FLAG;
+                if (byte == FLAG) state = FLAG_RCV;
                 break;
-            case FLAG:
-                if (byte == expectedA) state = ADDRESS;
-                else if (byte == 0x7E) state = FLAG;
+            case FLAG_RCV:
+                if (byte == expectedA) state = ADDRESS_RCV;
+                else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
-            case ADDRESS:
-                if (byte == expectedC) state = CONTROL;
-                else if (byte == 0x7E) state = FLAG;
+            case ADDRESS_RCV:
+                if (byte == expectedC) state = CONTROL_RCV;
+                else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
-            case CONTROL:
-                if (byte == (expectedA ^ expectedC)) state = BCC;
-                else if (byte == 0x7E) state = FLAG;
+            case CONTROL_RCV:
+                if (byte == (expectedA ^ expectedC)) state = BCC_RCV;
+                else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
-            case BCC:
-                if (byte == 0x7E) state = STOP;
+            case BCC_RCV:
+                if (byte == FLAG) state = STOP;
                 else state = START;
                 break;
             default:
@@ -156,7 +162,8 @@ int llOpenRx(LinkLayer llParameters){
 // LLSEND
 ////////////////////////////////////////////////
 int llSend(const unsigned char *buf, int bufSize){
-    // TODO: Implement this function
+    // Implementar o byte stuffing
+    // Implementar timeouts
     int bytes = writeBytesSerialPort(buf, bufSize);
     printf("%d bytes written to serial port\n", bytes);
 
@@ -167,9 +174,96 @@ int llSend(const unsigned char *buf, int bufSize){
 // LLRECEIVE
 ////////////////////////////////////////////////
 int llReceive(unsigned char *packet){
-    // TODO: Implement this function
+    typedef enum{START, FLAG_RCV, ADDRESS_RCV, CONTROL_RCV, BCC1_RCV, DATA, BCC2_RCV, STOP, ERROR} State;
+    State state = START;
+    unsigned char byte;
+    unsigned char address, control, bcc2;
+    unsigned char xor = 0x00, previousxor = 0x00;
+    int atual=0;
+    
+    char *response = malloc(5);
+    if (response == NULL) {
+        return -1;
+    }
 
-    return 0;
+    while (state != STOP){
+        int bytes = readByteSerialPort(&byte);
+        if (bytes < 0) {
+            perror("readByteSerialPort");
+            free(response);
+            return -1;
+        }
+        if (bytes == 0) continue;
+
+        switch (state){
+            case START:
+                if (byte == FLAG) state = FLAG_RCV;
+                break;
+            case FLAG_RCV:
+                address = byte;
+                if (byte == 0x03) state = ADDRESS_RCV;
+                else if (byte == FLAG) state = FLAG_RCV;
+                else state = START;
+                break;
+            case ADDRESS_RCV:{
+                if (byte == 0x00 || byte == 0x80 || byte == 0x0B){
+                    control = byte;
+                    state = CONTROL_RCV;
+                }
+                break;    
+            }
+            case CONTROL_RCV:
+                if (byte == (address ^ control)) state = BCC1_RCV;
+                else state = ERROR;
+                break;
+            case BCC1_RCV:
+                if (control == 0x0B && byte == FLAG) state = STOP;
+                else state = DATA;
+                break;
+            case DATA:
+                if (byte == FLAG){
+                    bcc2 = packet[atual-1];
+                    state = BCC2_RCV;
+                }
+                previousxor = xor;
+                xor=xor^byte;
+                if (atual > 0 && packet[atual-1] == ESC && byte == 0x5E){
+                    packet[atual-1] = FLAG;
+                }
+                else if (atual >0 && packet[atual-1] == ESC && byte == 0x5D){
+                    packet[atual-1] = ESC;
+                }
+                else{
+                    packet[atual] = byte;
+                    atual++;
+                }
+                break;
+            case BCC2_RCV:
+                if (previousxor == bcc2){
+                    packet[atual-1]='\0';
+                    state = STOP;
+                }
+                else state = ERROR;
+                break;
+            case ERROR:
+                if (control != 0x0B){
+                    response_frame(response,control,true);
+                    writeBytesSerialPort(response, 5);
+                }
+                free(response);
+                return -1;
+            case STOP:
+                if (control != 0x0B){
+                    response_frame(response,control,false);
+                    writeBytesSerialPort(response, 5);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    free(response);
+    return atual;
 }
 
 ////////////////////////////////////////////////
