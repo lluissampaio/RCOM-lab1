@@ -12,6 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <stdlib.h>
 
 #define FALSE 0
 #define TRUE 1
@@ -181,7 +182,7 @@ int llReceive(unsigned char *packet){
     unsigned char xor = 0x00, previousxor = 0x00;
     int atual=0;
     
-    char *response = malloc(5);
+    unsigned char *response = malloc(5);
     if (response == NULL) {
         return -1;
     }

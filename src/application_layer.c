@@ -24,7 +24,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         if (llOpenTx(llParameters) < 0) return;
 
         // TODO fazer o Control Packet
-        char *controlPacket = malloc(strlen(filename) + 3);
+        //char *controlPacket = malloc(strlen(filename) + 3);
 
         // Data packets
         const char *currentFile = filename;
@@ -111,7 +111,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                         if (buf[index]==0){
                             file.filesize=0;
                             for (int i=0; i<size_value; i++){
-                                file.filesize += buf[index+2+i]*pow(256, size_value-i-1); //IA generated this line
+                                file.filesize = (file.filesize << 8) | buf[index + 2 + i]; 
                             }
                         }
                         else if (buf[index]==1){ 
@@ -159,7 +159,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                         if (buf[index]==0){
                             filesize = 0;
                             for (int i=0; i<size_value; i++){
-                                filesize += buf[index+2+i]*pow(256, size_value-i-1); //IA generated this line
+                                filesize = (filesize << 8) | buf[index + 2 + i];
                             }
                         }
                         else if (buf[index]==1){ 
