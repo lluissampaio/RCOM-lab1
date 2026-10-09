@@ -6,7 +6,8 @@
 #include "link_layer.h"
 
 #include <stdio.h>
-#include <string.h>
+#include <stdlib.h>
+#include <string.h>  
 
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
                       int nTries, int timeout, const char *filename)
@@ -22,7 +23,42 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         
         if (llOpenTx(llParameters) < 0) return;
 
-        llSend((const unsigned char *)filename, strlen(filename));
+        // fazer o Control Packet
+        char *controlPacket = malloc(strlen(filename) + 3);
+
+        // Data packets
+        const char *currentFile = filename;
+        while (strlen(currentFile) > MAX_PAYLOAD_SIZE - 3) {
+            char *packet = malloc(MAX_PAYLOAD_SIZE);
+            if (packet == NULL) {
+                llCloseTx();
+                return;
+            }
+            packet[0] = 0x02;
+            packet[1] = (MAX_PAYLOAD_SIZE - 3) / 256;
+            packet[2] = (MAX_PAYLOAD_SIZE - 3) % 256;
+            memcpy(packet + 3, currentFile, MAX_PAYLOAD_SIZE - 3);
+            llSend((const unsigned char *)packet, MAX_PAYLOAD_SIZE);
+            free(packet);
+            currentFile += MAX_PAYLOAD_SIZE - 3;
+        }
+
+        int size = strlen(currentFile);
+        if (size > 0) {
+            char *packet = malloc(size + 3);
+            if (packet == NULL) {
+                llCloseTx();
+                return;
+            }
+            packet[0] = 0x02;
+            packet[1] = size / 256;
+            packet[2] = (size % 256);
+            memcpy(packet + 3, currentFile, size);
+            llSend((const unsigned char *)packet, size + 3);
+            free(packet);
+        }
+
+        //
 
         llCloseTx();
     }
