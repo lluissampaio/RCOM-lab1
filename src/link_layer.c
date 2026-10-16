@@ -28,6 +28,8 @@
 #define REJ0 0x54
 #define REJ1 0x55
 
+#define DISC 0x0B
+
 static int alarmEnabled = FALSE;
 
 static void alarmHandler(int signal){
@@ -54,7 +56,8 @@ static void response_frame(unsigned char* res, const unsigned char control, cons
     res[0]= FLAG;
     res[1]= 0x03;
     res[4]= FLAG;
-    if (control==0x00) res[2] = error ? REJ0 : RR1;
+    if (control == DISC) res[2] = DISC;
+    else if (control==0x00) res[2] = error ? REJ0 : RR1;
     else if (control==0x80) res[2] = error ? REJ1 : RR0;
     res[3] = res[1] ^ res[2];
 }
@@ -212,7 +215,7 @@ int llReceive(unsigned char *packet){
                 else state = START;
                 break;
             case ADDRESS_RCV:{
-                if (byte == 0x00 || byte == 0x80 || byte == 0x0B){
+                if (byte == 0x00 || byte == 0x80 || byte == DISC){
                     control = byte;
                     state = CONTROL_RCV;
                 }
@@ -223,10 +226,18 @@ int llReceive(unsigned char *packet){
                 else state = START; //Fico á espera do retry do sender
                 break;
             case BCC1_RCV:
-                if (control == 0x0B && byte == FLAG){
-                    //Mandar um DISC
-                    //DEFENIR UM VALOR NEGATIVO
-                    state = STOP;
+                if (control == DISC && byte == FLAG){
+                    response_frame(response, DISC, false);
+                    writeBytesSerialPort(response, 5);
+                    free(response);
+                    if (readControlFrame(0x03, uaFrame[2]) == 0){
+                        free(response);
+                        return -2;//acabou a conexão
+                    }
+                    else{
+                        free(response);
+                        return -1;// DIGO QUE É ERRO?
+                    }
                 } 
                 else {
                     state = DATA;
@@ -239,6 +250,7 @@ int llReceive(unsigned char *packet){
             case DATA:
                 if (byte == FLAG){
                     bcc2 = packet[atual-1];
+                    //fazer xor agora
                     if (previousxor == bcc2){
                         response_frame(response, control, false);
                         writeBytesSerialPort(response, 5);
@@ -253,8 +265,7 @@ int llReceive(unsigned char *packet){
                         break;
                     }
                 }
-                previousxor = xor;
-                xor=xor^byte;
+                //recever set dentro do reiceive
                 if (atual > 0 && packet[atual-1] == ESC && byte == 0x5E){
                     packet[atual-1] = FLAG;
                 }

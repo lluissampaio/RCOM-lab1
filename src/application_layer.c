@@ -72,7 +72,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         typedef struct{
             char* filename;//Opcional mandar
             int filesize;//Obrigatorio mandar  
-            
             unsigned char* data;       
         } File;
         
@@ -88,6 +87,12 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         unsigned char finished = 0;
         while (!finished){
             size_buf = llReceive(buf);
+            if (size_buf == -2){
+                printf("Connection closed by transmitter\n");
+                free(buf);
+                llCloseRx();
+                return;
+            }
             if (size_buf < 0) {
                 perror("llReceive");
                 free(buf);
