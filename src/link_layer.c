@@ -23,6 +23,11 @@
 #define FLAG 0x7E
 #define ESC  0X7D
 
+#define RR0  0xAA
+#define RR1  0xAB
+#define REJ0 0x54
+#define REJ1 0x55
+
 static int alarmEnabled = FALSE;
 
 static void alarmHandler(int signal){
@@ -49,8 +54,8 @@ static void response_frame(unsigned char* res, const unsigned char control, cons
     res[0]= FLAG;
     res[1]= 0x03;
     res[4]= FLAG;
-    if (control==0x00) res[2] = error ? 0x54 : 0xAB;
-    else if (control==0x80) res[2] = error ? 0x55 : 0xAA;
+    if (control==0x00) res[2] = error ? REJ0 : RR1;
+    else if (control==0x80) res[2] = error ? REJ1 : RR0;
     res[3] = res[1] ^ res[2];
 }
 
@@ -175,7 +180,7 @@ int llSend(const unsigned char *buf, int bufSize){
 // LLRECEIVE
 ////////////////////////////////////////////////
 int llReceive(unsigned char *packet){
-    typedef enum{START, FLAG_RCV, ADDRESS_RCV, CONTROL_RCV, BCC1_RCV, DATA, BCC2_RCV, STOP, ERROR} State;
+    typedef enum{START, FLAG_RCV, ADDRESS_RCV, CONTROL_RCV, BCC1_RCV, DATA, STOP} State;
     State state = START;
     unsigned char byte;
     unsigned char address, control, bcc2;
@@ -215,16 +220,38 @@ int llReceive(unsigned char *packet){
             }
             case CONTROL_RCV:
                 if (byte == (address ^ control)) state = BCC1_RCV;
-                else state = ERROR;
+                else state = START; //Fico á espera do retry do sender
                 break;
             case BCC1_RCV:
-                if (control == 0x0B && byte == FLAG) state = STOP;
-                else state = DATA;
+                if (control == 0x0B && byte == FLAG){
+                    //Mandar um DISC
+                    //DEFENIR UM VALOR NEGATIVO
+                    state = STOP;
+                } 
+                else {
+                    state = DATA;
+                    previousxor = xor;
+                    xor = xor ^ byte;
+                    packet[atual] = byte;
+                    atual++;
+                }    
                 break;
             case DATA:
                 if (byte == FLAG){
                     bcc2 = packet[atual-1];
-                    state = BCC2_RCV;
+                    if (previousxor == bcc2){
+                        response_frame(response, control, false);
+                        writeBytesSerialPort(response, 5);
+                        free(response);
+                        return atual;
+                    }
+                    else{
+                        response_frame(response, control, true);
+                        writeBytesSerialPort(response, 5);
+                        free(response);
+                        state = START;
+                        break;
+                    }
                 }
                 previousxor = xor;
                 xor=xor^byte;
@@ -237,26 +264,6 @@ int llReceive(unsigned char *packet){
                 else{
                     packet[atual] = byte;
                     atual++;
-                }
-                break;
-            case BCC2_RCV:
-                if (previousxor == bcc2){
-                    packet[atual-1]='\0';
-                    state = STOP;
-                }
-                else state = ERROR;
-                break;
-            case ERROR:
-                if (control != 0x0B){
-                    response_frame(response,control,true);
-                    writeBytesSerialPort(response, 5);
-                }
-                free(response);
-                return -1;
-            case STOP:
-                if (control != 0x0B){
-                    response_frame(response,control,false);
-                    writeBytesSerialPort(response, 5);
                 }
                 break;
             default:
