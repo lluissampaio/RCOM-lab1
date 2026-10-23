@@ -21,182 +21,219 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     
     if (strcmp(role, "tx") == 0){
         
-        if (llOpenTx(llParameters) < 0) return;
+        FILE *file = fopen(filename, "rb");
+        if (!file) {
+            perror("fopen");
+            return;
+        }
 
-        // TODO fazer o Control Packet
-        //char *controlPacket = malloc(strlen(filename) + 3);
+        int fileSize;
+        fseek(file, 0, SEEK_END);
+        fileSize = ftell(file);
+        if (fileSize < 0) {
+            perror("ftell");
+            fclose(file);
+            return;
+        }
+        fseek(file, 0, SEEK_SET);
 
+        if (llOpenTx(llParameters) < 0){
+            fclose(file);
+            return;
+        } 
+        
+        // Start Control packet
+        unsigned char controlPacket[1 + 2  + strlen(filename) + 2 + 4];
+        controlPacket[0] = 1;     
+        controlPacket[1] = 0; 
+        controlPacket[2] = 4; 
+        controlPacket[3] = (fileSize >> 24) & 0xFF;
+        controlPacket[4] = (fileSize >> 16) & 0xFF;
+        controlPacket[5] = (fileSize >> 8) & 0xFF;
+        controlPacket[6] = fileSize & 0xFF;
+        controlPacket[7] = 1; 
+        controlPacket[8] = strlen(filename); 
+        memcpy(controlPacket + 9, filename, strlen(filename));
+
+        llSend(controlPacket, sizeof(controlPacket));
+        
         // Data packets
-        const char *currentFile = filename;
-        while (strlen(currentFile) > MAX_PAYLOAD_SIZE - 3) {
-            char *packet = malloc(MAX_PAYLOAD_SIZE);
-            if (packet == NULL) {
-                llCloseTx();
+        unsigned char packet[MAX_PAYLOAD_SIZE];
+        int bytesRead = 0;
+        int atualSize = fileSize;
+        while (atualSize > 0) {
+            bytesRead = fread(packet+3, 1, MAX_PAYLOAD_SIZE - 3, file);
+            if (bytesRead < 0) {
+                perror("fread");
+                fclose(file); 
+                //ver se aqui faço tbm closetx e se sim tenho de ter no receiver aquela nuance de receber o disc
                 return;
             }
-            packet[0] = 0x02;
-            packet[1] = (MAX_PAYLOAD_SIZE - 3) / 256;
-            packet[2] = (MAX_PAYLOAD_SIZE - 3) % 256;
-            memcpy(packet + 3, currentFile, MAX_PAYLOAD_SIZE - 3);
-            llSend((const unsigned char *)packet, MAX_PAYLOAD_SIZE);
-            free(packet);
-            currentFile += MAX_PAYLOAD_SIZE - 3;
-        }
-
-        int size = strlen(currentFile);
-        if (size > 0) {
-            char *packet = malloc(size + 3);
-            if (packet == NULL) {
-                llCloseTx();
+            atualSize -= bytesRead;
+            packet[0] = 2;
+            packet[1] = (bytesRead) / 256;
+            packet[2] = (bytesRead) % 256;
+            if (llSend((const unsigned char *)packet, bytesRead + 3) < 0) {
+                perror("llSend");
+                fclose(file);
                 return;
             }
-            packet[0] = 0x02;
-            packet[1] = size / 256;
-            packet[2] = (size % 256);
-            memcpy(packet + 3, currentFile, size);
-            llSend((const unsigned char *)packet, size + 3);
-            free(packet);
         }
 
-        // TODO Avisar que já acabou com Control Packet
-
+        // End control packet
+        controlPacket[0] = 3; // Control packet type
+        llSend(controlPacket, sizeof(controlPacket));
+        
         llCloseTx();
     }
     else if (strcmp(role, "rx") == 0){
 
         if (llOpenRx(llParameters) < 0) return;
 
-        // TODO, pensar se acrescento parametros
-        // TODO, testar
+        FILE *newFile = NULL;
+        char *rxFilename = NULL;
+        int rxFilesize = -1;
 
-        typedef struct{
-            char* filename;//Opcional mandar
-            int filesize;//Obrigatorio mandar  
-            unsigned char* data;       
-        } File;
+        unsigned char buf[MAX_PAYLOAD_SIZE];
+        int size_atual=0, size_value=0, acc=0;
+        const char* fileName = NULL;
         
-        File file = {NULL,-1,NULL};
-
-        unsigned char* buf = malloc(MAX_PAYLOAD_SIZE);
-        if (buf == NULL) {
-            llCloseRx();
-            return;
-        }
-        int size_atual=0, size_value=0, size_buf=0, acc=0;
-        int index=1;
         unsigned char finished = 0;
+        
         while (!finished){
-            size_buf = llReceive(buf);
+            int size_buf = llReceive(buf);
             if (size_buf == -2){
                 printf("Connection closed by transmitter\n");
-                free(buf);
+                if (newFile) fclose(newFile);
+                if (rxFilename) free(rxFilename);
                 llCloseRx();
                 return;
             }
             if (size_buf < 0) {
                 perror("llReceive");
-                free(buf);
+                if (newFile) fclose(newFile);
+                if (rxFilename) free(rxFilename);
                 llCloseRx();
                 return;
             }
             if (size_buf == 0) continue;
-            if (file.data == NULL && file.filesize >= 0){
-                file.data=malloc(file.filesize);
-                if (file.data == NULL){
-                    printf("Failing doing mem allocation to File Data\n");
-                    free(buf);
-                    llCloseRx();
-                    return;
-                }
-            } 
-            index=1;
+            
+            int index=1;
             switch (buf[0]){
                 case 1:
                     while (index<size_buf){
                         size_value = buf[index+1];
-                        if (buf[index]==0){
-                            file.filesize=0;
+                        if (buf[index]==0){ // File size
+                            rxFilesize = 0;
                             for (int i=0; i<size_value; i++){
-                                file.filesize = (file.filesize << 8) | buf[index + 2 + i]; 
+                                rxFilesize = (rxFilesize << 8) | buf[index + 2 + i]; 
                             }
                         }
-                        else if (buf[index]==1){ 
-                            file.filename = malloc(size_value);
-                            memcpy(file.filename, buf+index+2, size_value);
+                        else if (buf[index]==1){ // File name
+                            rxFilename = malloc(size_value + 1);
+                            memcpy(rxFilename, buf + index + 2, size_value);
+                            rxFilename[size_value] = '\0';
                         }
                         else{
                             printf("Invalid control packet\n");
-                            free(buf);
+                            if (rxFilename) free(rxFilename);
+                            if (newFile) fclose(newFile);
                             llCloseRx();
                             return;
                         }
                         index+=size_value+2;
-                    }                  
+                    }
+
+                    if (rxFilesize < 0){
+                        printf("Invalid file size / File size not indicated\n");
+                        if (rxFilename) free(rxFilename);
+                        if (newFile) fclose(newFile);
+                        llCloseRx();
+                        return;
+                    }
+
+                    fileName = (filename != NULL && strlen(filename) > 0) ? filename : rxFilename;
+                    newFile = fopen(fileName, "wb");
+                    if (!newFile) {
+                        perror("fopen");
+                        if (rxFilename) free(rxFilename);
+                        llCloseRx();
+                        return;
+                    }
                     break;
                 case 2:
-                    if (file.filesize==-1){ 
+                    if (rxFilesize==-1){ 
                         printf("The file size must be indicated before sending data\n");
-                        free(buf);
+                        if (rxFilename) free(rxFilename);
+                        if (newFile) fclose(newFile);
                         llCloseRx();
                         return;
                     }
                     size_atual = 256*buf[1]+buf[2];
-                    if (acc+size_atual>file.filesize){
+                    acc+=size_atual;
+                    if (acc>rxFilesize){
                         printf("The file data is bigger than the file size initial planned\n");
-                        free(buf);
+                        if (rxFilename) free(rxFilename);
+                        if (newFile) fclose(newFile);
                         llCloseRx();
                         return;
                     }
-                    memcpy(file.data+acc,buf+3,size_atual); 
-                    acc+=size_atual;
+                    fwrite(buf+3, 1, size_atual, newFile);
                     break;
                 case 3:
-                    if (file.filesize != acc){
-                        printf("File data doesn't match with initial data\n");
-                        free(buf);
+                    
+                    if (rxFilesize==-1){ 
+                        printf("Invalid order of control packet\n");
+                        if (rxFilename) free(rxFilename);
+                        if (newFile) fclose(newFile);
                         llCloseRx();
                         return;
                     }
-                    
+                
                     char* name = NULL;
                     int filesize = -1;
+                    
                     while (index<size_buf){
                         size_value = buf[index+1];
-                        if (buf[index]==0){
+                        if (buf[index]==0){ // File size
                             filesize = 0;
                             for (int i=0; i<size_value; i++){
                                 filesize = (filesize << 8) | buf[index + 2 + i];
                             }
                         }
-                        else if (buf[index]==1){ 
-                            name = malloc(size_value);
+                        else if (buf[index]==1){  // File name
+                            name = malloc(size_value + 1);
                             memcpy(name, buf+index+2, size_value);
+                            name[size_value] = '\0';
                         }
                         else{
                             printf("Invalid control packet\n");
-                            free(buf);
+                            if (rxFilename) free(rxFilename);
+                            if (newFile) fclose(newFile);
                             llCloseRx();
                             return;
                         }
                         index+=size_value+2;
                     }                                     
-                    break;
                     
-                    if (file.filename != name || file.filesize != filesize){
-                        printf("File name or size doesn't match with initial data\n");
-                        free(buf);
-                        llCloseRx();
-                        return;
+                    if (filesize != rxFilesize || acc != rxFilesize) {
+                        fprintf(stderr, "Warning: File size doesn't match with received data!\n");
+                    }
+                    if (rxFilename && name && strcmp(rxFilename, name) != 0) {
+                        fprintf(stderr, "Warning: File name doesn't match with initial data!\n");
                     }
 
+                    if (name) free(name);
+                    if (rxFilename) free(rxFilename);
+                    if (newFile) fclose(newFile);
+                    
                     finished = 1;
+                    printf("File %s received successfully!\n", fileName);
                     break;
                 default:
                     break;    
             }
         }
-        free(buf);
-        //free(file.data)
         llCloseRx();
     }
     else{
