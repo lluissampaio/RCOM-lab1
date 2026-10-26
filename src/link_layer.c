@@ -487,16 +487,13 @@ int llCloseRx(){
     
     unsigned char adress = 0, control = 0;
 
-    if (readControlFrame(&adress, &control) != 0) {
-        printf("Timeout waiting for DISC frame\n");
-        return -1;
+    while (adress != TX || control != DISC) {
+        if (readControlFrame(&adress, &control) != 0) {
+            printf("readByteSerialPort failed\n");
+            return -1;
+        }
     }
-
-    if (adress != TX || control != DISC) {
-        printf("Unexpected control frame received\n");
-        return -1;
-    }
-
+    
     unsigned char discFrame[5] = {FLAG,RX,DISC,RX ^ DISC,FLAG};
 
     if (writeBytesSerialPort(discFrame, 5) < 0) {
@@ -504,14 +501,11 @@ int llCloseRx(){
         return -1;
     }
 
-    if (readControlFrame(&adress, &control) != 0) {
-        printf("Timeout waiting for UA frame\n");
-        return -1;
-    }
-
-    if (adress != RX || control != UA) {
-        printf("Unexpected control frame received\n");
-        return -1;
+    while (adress != RX || control != UA) {
+        if (readControlFrame(&adress, &control) != 0) {
+            printf("readByteSerialPort failed\n");
+            return -1;
+        }
     }
 
     if (closeSerialPort() < 0) {
