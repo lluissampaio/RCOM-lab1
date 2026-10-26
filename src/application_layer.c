@@ -66,7 +66,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             if (bytesRead < 0) {
                 perror("fread");
                 fclose(file); 
-                //ver se aqui faço tbm closetx e se sim tenho de ter no receiver aquela nuance de receber o disc
+                llCloseTx(); //because of this, need to implement edge case in the receiver in llreceive, to avoid the receiver to wait for a packet that will never arrive
                 return;
             }
             atualSize -= bytesRead;
@@ -76,6 +76,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             if (llSend((const unsigned char *)packet, bytesRead + 3) < 0) {
                 perror("llSend");
                 fclose(file);
+                llCloseTx(); //because of this, need to implement edge case in the receiver in llreceive, to avoid the receiver to wait for a packet that will never arrive
                 return;
             }
         }
@@ -106,7 +107,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 printf("Connection closed by transmitter\n");
                 if (newFile) fclose(newFile);
                 if (rxFilename) free(rxFilename);
-                llCloseRx();
                 return;
             }
             if (size_buf < 0) {

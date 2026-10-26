@@ -286,10 +286,10 @@ int llReceive(unsigned char *packet){
     typedef enum{START, FLAG_RCV, ADDRESS_RCV, CONTROL_RCV, BCC1_RCV, DATA, STOP} State;
     State state = START;
     unsigned char byte;
-    unsigned char address, control, bcc2;
-    unsigned char xor = 0x00,prev_xor=0X00;
-    bool escaped=false;
-    int atual=0;
+    unsigned char address, control, bcc2 = 0x00;
+    unsigned char xor = 0x00;
+    bool escaped = false;
+    int atual = 0;
     unsigned char response[5];
 
     while (state != STOP){
@@ -310,27 +310,40 @@ int llReceive(unsigned char *packet){
                 else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
-            case ADDRESS_RCV:{
-                if (byte == I0 || byte == I1 || byte == DISC || byte == SET){
+
+            case ADDRESS_RCV:
+                if (byte == FLAG) state = FLAG_RCV;
+                else if (byte == I0 || byte == I1 || byte == DISC || byte == SET) {
                     control = byte;
                     state = CONTROL_RCV;
+                } else {
+                    state = START;
                 }
-                break;    
-            }
+                break;
+
             case CONTROL_RCV:
                 if (byte == (address ^ control)) state = BCC1_RCV;
-                else state = START; //Fico á espera do retry do sender
+                else if (byte == FLAG) state = FLAG_RCV;
+                else state = START;
                 break;
+
             case BCC1_RCV:
-                /*if (control == DISC && byte == FLAG){
+                if (control == DISC && byte == FLAG){//edge case explained in application layer tx
                     if (build_frame(response,RX,DISC) < 0){
                         perror("writeBytesSerialPort");
                         return -1;
                     }
-                    if (readControlFrame(RX, uaFrame[2]) == 0) return -2; 
+                    unsigned char adress = 0, control = 0;
+                    if (readControlFrame(&adress, &control) == 0){
+                        if (adress==RX && control == uaFrame[2]) return -2;
+                        else{
+                            printf("Unexpected control frame received\n");
+                            return -1;
+                        }
+                    }  
                     else return -1;
                 }
-                else*/ if (control == SET && byte == FLAG){ //edge case if sender didn't receive the ua frame
+                else if (control == SET && byte == FLAG){ //edge case if sender didn't receive the ua frame
                     if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0){
                         perror("writeBytesSerialPort");
                         return -1;
@@ -340,8 +353,8 @@ int llReceive(unsigned char *packet){
                 else {
                     atual=0;
                     xor=0;
-                    prev_xor=0;
                     state = DATA;
+                    escaped = FALSE;
                     if (byte==ESC) escaped = TRUE;
                     else{
                         packet[atual] = byte;
@@ -350,29 +363,31 @@ int llReceive(unsigned char *packet){
                     }
                 }    
                 break;
+
             case DATA:
-                if (byte == FLAG){
-                    bcc2 = packet[atual-1];
-                    if (prev_xor == bcc2){
-                        if (expectedFrame == control){ // Aceite
-                            if (response_frame(response, control, false)< 0){
+                if (byte == FLAG) {
+                    if (atual == 0) {
+                        state = START;
+                        break;
+                    }
+                    if (xor == bcc2) {
+                        if (expectedFrame == control) { //aceite
+                            if (response_frame(response, control, false) < 0) {
                                 perror("writeBytesSerialPort");
                                 return -1;
                             }
                             expectedFrame = expectedFrame == I0 ? I1 : I0;
-                            return atual - 1;
+                            return atual;
                         }
-                        else{ //duplicado
-                            unsigned char c = expectedFrame==I0 ? RR0 : RR1;
-                            if (build_frame(response,TX,c) < 0){
-                                perror("writeBytesSerialPort");
-                                return -1;
-                            }
-                            state = START;
+                        // duplicado
+                        unsigned char c = expectedFrame == I0 ? RR0 : RR1;
+                        if (build_frame(response, TX, c) < 0) {
+                            perror("writeBytesSerialPort");
+                            return -1;
                         }
-                    }
-                    else{ //Rejeitado
-                        if (response_frame(response, control, true) < 0){
+                        state = START;
+                    } else { // rejeitado
+                        if (response_frame(response, control, true) < 0) {
                             perror("writeBytesSerialPort");
                             return -1;
                         }
@@ -380,34 +395,48 @@ int llReceive(unsigned char *packet){
                     }
                     break;
                 }
-                if (escaped){
-                    if (byte==0x5E) packet[atual] = FLAG;
-                    else if (byte==0x5D) packet[atual] = ESC;
-                    else{
-                        escaped = FALSE;
-                        atual=0;
+
+                if (escaped) {
+                    if (byte == 0x5E) byte = FLAG;
+                    else if (byte == 0x5D) byte = ESC;
+                    else {
                         state = START;
                         break;
                     }
-                    prev_xor=xor;
-                    xor^=packet[atual];
-                    escaped = FALSE;
-                    atual++;
-                }
-                else{
-                    if (byte==ESC) escaped = TRUE;
+
+                    if (atual == MAX_PAYLOAD_SIZE) bcc2 = byte;
+                    else if (atual > MAX_PAYLOAD_SIZE) {
+                        fprintf(stderr, "llReceive: payload overflow\n");
+                        return -1;
+                    }
                     else{
-                        prev_xor=xor;
-                        xor^=byte;
+                        xor ^= byte;
                         packet[atual] = byte;
                         atual++;
                     }
+                    escaped = false;
+                } else {
+                    if (byte == ESC) escaped = true;
+                    else {
+                        if (atual == MAX_PAYLOAD_SIZE) bcc2 = byte;
+                        else if (atual > MAX_PAYLOAD_SIZE) {
+                            fprintf(stderr, "llReceive: payload overflow\n");
+                            return -1;
+                        }
+                        else {
+                            xor ^= byte;
+                            packet[atual] = byte;
+                            atual++;
+                        }
+                    }
                 }
                 break;
+
             default:
                 break;
         }
     }
+
     return atual;
 }
 
@@ -422,7 +451,10 @@ int llCloseTx(){
     
     for (int i = 0; i < linkConfig.nRetransmissions; i++){
 
-        writeBytesSerialPort(discFrame, 5);
+        if (writeBytesSerialPort(discFrame, 5) < 0){
+            perror("writeBytesSerialPort");
+            return -1;
+        }
 
         alarm(linkConfig.timeout);
         alarmEnabled = TRUE;
@@ -430,7 +462,10 @@ int llCloseTx(){
         if (readControlFrame(&adress, &control) == 0){
             if (adress==RX && control == DISC){
                 unsigned char ua_frame[5] = {FLAG,RX,UA,RX ^ uaFrame[2],FLAG};
-                writeBytesSerialPort(ua_frame, 5);
+                if (writeBytesSerialPort(ua_frame, 5) < 0){
+                    perror("writeBytesSerialPort");
+                    return -1;
+                }
                 alarm(0);
                 alarmEnabled = FALSE;
                 break;
@@ -450,14 +485,17 @@ int llCloseTx(){
 
 int llCloseRx(){
     
-    unsigned char adress = 0,control = 0;
-    
-    if (readControlFrame(&adress, &control) < 0){
-        if (adress != TX || control != DISC){
-            printf("Unexpected control frame received\n");
-            return -1;
-        }
-    } 
+    unsigned char adress = 0, control = 0;
+
+    if (readControlFrame(&adress, &control) != 0) {
+        printf("Timeout waiting for DISC frame\n");
+        return -1;
+    }
+
+    if (adress != TX || control != DISC) {
+        printf("Unexpected control frame received\n");
+        return -1;
+    }
 
     unsigned char discFrame[5] = {FLAG,RX,DISC,RX ^ DISC,FLAG};
 
@@ -466,11 +504,14 @@ int llCloseRx(){
         return -1;
     }
 
-    if (readControlFrame(&adress, &control) < 0) {
-        if (adress != RX || control != UA){
-            printf("Unexpected control frame received\n");
-            return -1;
-        }
+    if (readControlFrame(&adress, &control) != 0) {
+        printf("Timeout waiting for UA frame\n");
+        return -1;
+    }
+
+    if (adress != RX || control != UA) {
+        printf("Unexpected control frame received\n");
+        return -1;
     }
 
     if (closeSerialPort() < 0) {
