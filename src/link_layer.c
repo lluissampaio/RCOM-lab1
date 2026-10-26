@@ -59,16 +59,6 @@ static const unsigned char uaFrame[5] = {
     FLAG,
 };
 
-static int response_frame(unsigned char* res, const unsigned char control, const bool error){
-    res[0]= FLAG;
-    res[1]= TX;
-    res[4]= FLAG;
-    if (control==I0) res[2] = error ? REJ0 : RR1;
-    else if (control==I1) res[2] = error ? REJ1 : RR0;
-    res[3] = res[1] ^ res[2];
-    return writeBytesSerialPort(res, 5);
-}
-
 static int build_frame(unsigned char* res, const unsigned char adress, const unsigned char control){
     res[0]=FLAG; res[4]=FLAG;
     res[1]=adress;
@@ -246,20 +236,17 @@ int llSend(const unsigned char *buf, int bufSize){
             perror("writeBytesSerialPort");
             return -1;
         }
+        printf("llSend: Frame sent, waiting for response\n");
         
         alarm(linkConfig.timeout);
         alarmEnabled = TRUE;
         while (alarmEnabled) {
             if (readControlFrame(&adress,&control) == 0){
-                if (adress != TX || (control != RR0 && control != RR1 && control != REJ0 && control != REJ1)){
-                    printf("Unexpected control frame received\n");
-                    alarm(0);
-                    alarmEnabled = FALSE;
-                    return -1;
-                }
+                if (adress != TX) continue;
                 
                 if (control == expectedRR){
                     expectedFrame = expectedFrame == I0 ? I1 : I0;
+                    printf("llSend: RR received, frame acknowledged\n");
                     alarm(0);
                     alarmEnabled = FALSE;
                     return frameSize;
@@ -379,8 +366,10 @@ int llReceive(unsigned char *packet){
                         xor = prev_xor;
                     } 
                     if (xor == bcc2) {
+                        printf("llReceive: Frame received successfully\n");
+                        unsigned char c = expectedFrame == I0 ? RR1 : RR0;
                         if (expectedFrame == control) { //aceite
-                            if (response_frame(response, control, false) < 0) {
+                            if (build_frame(response, TX, c) < 0) {
                                 perror("writeBytesSerialPort");
                                 return -1;
                             }
@@ -388,14 +377,16 @@ int llReceive(unsigned char *packet){
                             return atual;
                         }
                         // duplicado
-                        unsigned char c = expectedFrame == I0 ? RR0 : RR1;
+                        printf("llReceive: Duplicate frame received\n");
+                        c = expectedFrame == I0 ? RR0 : RR1;
                         if (build_frame(response, TX, c) < 0) {
                             perror("writeBytesSerialPort");
                             return -1;
                         }
                         state = START;
                     } else { // rejeitado
-                        if (response_frame(response, control, true) < 0) {
+                        unsigned char curREJ = (control == I0) ? REJ0 : REJ1;
+                        if (build_frame(response, TX, curREJ) < 0) {
                             perror("writeBytesSerialPort");
                             return -1;
                         }
@@ -414,8 +405,13 @@ int llReceive(unsigned char *packet){
 
                     if (atual == MAX_PAYLOAD_SIZE) bcc2 = byte;
                     else if (atual > MAX_PAYLOAD_SIZE) {
-                        fprintf(stderr, "llReceive: payload overflow\n");
-                        return -1;
+                        unsigned char curREJ = (control == I0) ? REJ0 : REJ1;
+                        if (build_frame(response, TX, curREJ) < 0) {
+                            perror("writeBytesSerialPort");
+                            return -1;
+                        }
+                        state = START;
+                        break;
                     }
                     else{
                         prev_xor = xor;
@@ -429,8 +425,13 @@ int llReceive(unsigned char *packet){
                     else {
                         if (atual == MAX_PAYLOAD_SIZE) bcc2 = byte;
                         else if (atual > MAX_PAYLOAD_SIZE) {
-                            fprintf(stderr, "llReceive: payload overflow\n");
-                            return -1;
+                            unsigned char curREJ = (control == I0) ? REJ0 : REJ1;
+                            if (build_frame(response, TX, curREJ) < 0) {
+                                perror("writeBytesSerialPort");
+                                return -1;
+                            }
+                            state = START;
+                            break;
                         }
                         else {
                             prev_xor = xor;
