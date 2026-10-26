@@ -145,8 +145,10 @@ int llOpenTx(LinkLayer llParameters){
 
     for (int i = 0; i < llParameters.nRetransmissions; i++){
 
-        int bytes = writeBytesSerialPort(setFrame, sizeof(setFrame));
-        printf("%d bytes written to serial port\n", bytes);
+        if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) {
+            perror("writeBytesSerialPort");
+            return -1;
+        }
 
         alarm(llParameters.timeout);
         alarmEnabled = TRUE;
@@ -154,7 +156,6 @@ int llOpenTx(LinkLayer llParameters){
         if (readControlFrame(&adress,&control) == 0){
             if (adress==TX && control == uaFrame[2]){
                 alarm(0);
-                printf("UA recebido com sucesso!\n");
                 alarmEnabled=FALSE;
                 return 0;
             }
@@ -180,9 +181,10 @@ int llOpenRx(LinkLayer llParameters){
 
     if (readControlFrame(&adress, &control) == 0) {
         if (adress==setFrame[1] && control == setFrame[2]){
-            printf("SET recebido com sucesso!\n");
-            writeBytesSerialPort(uaFrame, sizeof(uaFrame));
-            printf("UA enviado de volta!\n");
+            if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
+                perror("writeBytesSerialPort");
+                return -1;
+            }
             expectedFrame = I0;
             return 0;
         }
@@ -287,7 +289,7 @@ int llReceive(unsigned char *packet){
     State state = START;
     unsigned char byte;
     unsigned char address, control, bcc2 = 0x00;
-    unsigned char xor = 0x00;
+    unsigned char xor = 0x00, prev_xor = 0x00;
     bool escaped = false;
     int atual = 0;
     unsigned char response[5];
@@ -352,6 +354,7 @@ int llReceive(unsigned char *packet){
                 } 
                 else {
                     atual=0;
+                    prev_xor = 0;
                     xor=0;
                     state = DATA;
                     escaped = FALSE;
@@ -370,6 +373,11 @@ int llReceive(unsigned char *packet){
                         state = START;
                         break;
                     }
+                    atual--;
+                    if (atual < MAX_PAYLOAD_SIZE){ // caso onde o payload é menor que o maximo, o bcc2 é o ultimo byte do payload
+                        bcc2 = packet[atual];
+                        xor = prev_xor;
+                    } 
                     if (xor == bcc2) {
                         if (expectedFrame == control) { //aceite
                             if (response_frame(response, control, false) < 0) {
@@ -410,10 +418,11 @@ int llReceive(unsigned char *packet){
                         return -1;
                     }
                     else{
+                        prev_xor = xor;
                         xor ^= byte;
                         packet[atual] = byte;
-                        atual++;
                     }
+                    atual++; //fora do else de cima para nao ficar preso na linha 417 em caso de erro
                     escaped = false;
                 } else {
                     if (byte == ESC) escaped = true;
@@ -424,10 +433,11 @@ int llReceive(unsigned char *packet){
                             return -1;
                         }
                         else {
+                            prev_xor = xor;
                             xor ^= byte;
                             packet[atual] = byte;
-                            atual++;
                         }
+                        atual++;
                     }
                 }
                 break;
@@ -437,7 +447,7 @@ int llReceive(unsigned char *packet){
         }
     }
 
-    return atual;
+    return -1;
 }
 
 ////////////////////////////////////////////////

@@ -43,7 +43,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         } 
         
         // Start Control packet
-        unsigned char controlPacket[1 + 2  + strlen(filename) + 2 + 4];
+        unsigned char controlPacket[1 + 2 + 4 + 2 + strlen(filename)];
         controlPacket[0] = 1;     
         controlPacket[1] = 0; 
         controlPacket[2] = 4; 
@@ -152,7 +152,16 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                         return;
                     }
 
-                    fileName = (filename != NULL && strlen(filename) > 0) ? filename : rxFilename;
+                    const char *outputName = NULL;
+                    if (filename != NULL && strlen(filename) > 0) {
+                        outputName = filename;
+                    } else if (rxFilename != NULL && strlen(rxFilename) > 0) {
+                        outputName = rxFilename;
+                    } else {
+                        outputName = "received_file";
+                    }
+
+                    fileName = outputName;
                     newFile = fopen(fileName, "wb");
                     if (!newFile) {
                         perror("fopen");
