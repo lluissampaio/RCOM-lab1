@@ -277,7 +277,7 @@ int llReceive(unsigned char *packet){
     unsigned char byte;
     unsigned char address, control, bcc2 = 0x00;
     unsigned char xor = 0x00, prev_xor = 0x00;
-    bool escaped = false;
+    bool escaped = false, dataError = false;
     int atual = 0;
     unsigned char response[5];
 
@@ -317,73 +317,83 @@ int llReceive(unsigned char *packet){
                 break;
 
             case BCC1_RCV:
-                if (control == DISC && byte == FLAG){//edge case explained in application layer tx
-                    if (build_frame(response,RX,DISC) < 0){
-                        perror("writeBytesSerialPort");
-                        return -1;
-                    }
-                    unsigned char adress = 0, control = 0;
-                    if (readControlFrame(&adress, &control) == 0){
-                        if (adress==RX && control == uaFrame[2]) return -2;
-                        else{
-                            printf("Unexpected control frame received\n");
+                if (control == DISC) {
+                    if (byte == FLAG) { // edge case explained in application layer tx
+                        if (build_frame(response, RX, DISC) < 0) {
+                            perror("writeBytesSerialPort");
                             return -1;
                         }
-                    }  
-                    else return -1;
+                        unsigned char adress = 0, ctrl = 0;
+                        if (readControlFrame(&adress, &ctrl) == 0) {
+                            if (adress == RX && ctrl == uaFrame[2]) return -2;
+                            else {
+                                printf("Unexpected control frame received\n");
+                                return -1;
+                            }
+                        } else return -1;
+                    } else {
+                        state = START;
+                    }
                 }
-                else if (control == SET && byte == FLAG){ //edge case if sender didn't receive the ua frame
-                    if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0){
-                        perror("writeBytesSerialPort");
-                        return -1;
-                    };
+                else if (control == SET) {
+                    if (byte == FLAG) { // edge case if sender didn't receive the ua frame
+                        if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
+                            perror("writeBytesSerialPort");
+                            return -1;
+                        }
+                    }
                     state = START;
-                } 
+                }
+                else if (byte == FLAG) {
+                    state = FLAG_RCV;
+                }
                 else {
                     atual=0;
                     prev_xor = 0;
                     xor=0;
+                    bcc2 = 0;
                     state = DATA;
                     escaped = FALSE;
-                    if (byte==ESC) escaped = TRUE;
-                    else{
+                    dataError = false;
+                    if (byte == ESC) escaped = TRUE;
+                    else {
                         packet[atual] = byte;
                         atual++;
-                        xor=byte;
+                        xor = byte;
+                        bcc2 = byte;
                     }
-                }    
+                }
                 break;
 
             case DATA:
                 if (byte == FLAG) {
-                    if (atual == 0) {
-                        state = START;
-                        break;
-                    }
-                    atual--;
-                    if (atual < MAX_PAYLOAD_SIZE){ // caso onde o payload é menor que o maximo, o bcc2 é o ultimo byte do payload
-                        bcc2 = packet[atual];
+                    if (atual > 0) {
+                        atual--;
                         xor = prev_xor;
-                    } 
-                    if (xor == bcc2) {
-                        printf("llReceive: Frame received successfully\n");
-                        unsigned char c = expectedFrame == I0 ? RR1 : RR0;
-                        if (expectedFrame == control) { //aceite
-                            if (build_frame(response, TX, c) < 0) {
-                                perror("writeBytesSerialPort");
-                                return -1;
-                            }
-                            expectedFrame = expectedFrame == I0 ? I1 : I0;
-                            return atual;
-                        }
-                        // duplicado
+                    } else {
+                        dataError = true;
+                    }
+
+                    // duplicado
+                    if (expectedFrame != control) {
                         printf("llReceive: Duplicate frame received\n");
-                        c = expectedFrame == I0 ? RR0 : RR1;
+                        unsigned char c = expectedFrame == I0 ? RR0 : RR1;
                         if (build_frame(response, TX, c) < 0) {
                             perror("writeBytesSerialPort");
                             return -1;
                         }
                         state = START;
+                        break;
+                    }
+                    if (!escaped && !dataError && atual <= MAX_PAYLOAD_SIZE && xor == bcc2) {
+                        printf("llReceive: Frame received successfully\n");
+                        unsigned char c = expectedFrame == I0 ? RR1 : RR0;
+                        if (build_frame(response, TX, c) < 0) {
+                            perror("writeBytesSerialPort");
+                            return -1;
+                        }
+                        expectedFrame = expectedFrame == I0 ? I1 : I0;
+                        return atual;
                     } else { // rejeitado
                         unsigned char curREJ = (control == I0) ? REJ0 : REJ1;
                         if (build_frame(response, TX, curREJ) < 0) {
@@ -396,46 +406,28 @@ int llReceive(unsigned char *packet){
                 }
 
                 if (escaped) {
+                    escaped = false;
                     if (byte == 0x5E) byte = FLAG;
                     else if (byte == 0x5D) byte = ESC;
                     else {
-                        state = START;
+                        dataError = true;
                         break;
                     }
 
-                    if (atual == MAX_PAYLOAD_SIZE) bcc2 = byte;
-                    else if (atual > MAX_PAYLOAD_SIZE) {
-                        unsigned char curREJ = (control == I0) ? REJ0 : REJ1;
-                        if (build_frame(response, TX, curREJ) < 0) {
-                            perror("writeBytesSerialPort");
-                            return -1;
-                        }
-                        state = START;
-                        break;
-                    }
-                    else{
-                        prev_xor = xor;
-                        xor ^= byte;
+                    prev_xor = xor;
+                    xor ^= byte;
+                    bcc2 = byte;
+                    if (atual < MAX_PAYLOAD_SIZE) {
                         packet[atual] = byte;
                     }
-                    atual++; //fora do else de cima para nao ficar preso na linha 417 em caso de erro
-                    escaped = false;
+                    atual++;
                 } else {
                     if (byte == ESC) escaped = true;
                     else {
-                        if (atual == MAX_PAYLOAD_SIZE) bcc2 = byte;
-                        else if (atual > MAX_PAYLOAD_SIZE) {
-                            unsigned char curREJ = (control == I0) ? REJ0 : REJ1;
-                            if (build_frame(response, TX, curREJ) < 0) {
-                                perror("writeBytesSerialPort");
-                                return -1;
-                            }
-                            state = START;
-                            break;
-                        }
-                        else {
-                            prev_xor = xor;
-                            xor ^= byte;
+                        prev_xor = xor;
+                        xor ^= byte;
+                        bcc2 = byte;
+                        if (atual < MAX_PAYLOAD_SIZE) {
                             packet[atual] = byte;
                         }
                         atual++;
