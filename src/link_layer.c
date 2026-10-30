@@ -334,7 +334,10 @@ int llReceive(unsigned char *packet){
                         }
                         unsigned char adress = 0, ctrl = 0;
                         if (readControlFrame(&adress, &ctrl) == 0) {
-                            if (adress == RX && ctrl == uaFrame[2]) return -2;
+                            if (adress == RX && ctrl == uaFrame[2]) {
+                                closeSerialPort();
+                                return -2;
+                            }
                             else {
                                 printf("Unexpected control frame received\n");
                                 return -1;

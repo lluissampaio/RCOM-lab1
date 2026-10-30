@@ -55,7 +55,12 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         controlPacket[8] = strlen(filename); 
         memcpy(controlPacket + 9, filename, strlen(filename));
 
-        llSend(controlPacket, sizeof(controlPacket));
+        if (llSend(controlPacket, sizeof(controlPacket)) < 0) {
+            perror("llSend");
+            fclose(file);
+            llCloseTx();
+            return;
+        }
         
         // Data packets
         unsigned char packet[MAX_PAYLOAD_SIZE];
@@ -63,7 +68,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         int atualSize = fileSize;
         while (atualSize > 0) {
             bytesRead = fread(packet+3, 1, MAX_PAYLOAD_SIZE - 3, file);
-            if (bytesRead < 0) {
+            if (bytesRead <= 0) {
                 perror("fread");
                 fclose(file); 
                 llCloseTx(); //because of this, need to implement edge case in the receiver in llreceive, to avoid the receiver to wait for a packet that will never arrive
@@ -83,8 +88,14 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         // End control packet
         controlPacket[0] = 3; // Control packet type
-        llSend(controlPacket, sizeof(controlPacket));
+        if (llSend(controlPacket, sizeof(controlPacket)) < 0) {
+            perror("llSend");
+            fclose(file);
+            llCloseTx();
+            return;
+        }
         
+        fclose(file);
         llCloseTx();
     }
     else if (strcmp(role, "rx") == 0){
