@@ -133,26 +133,33 @@ int llOpenTx(LinkLayer llParameters){
 
     unsigned char adress = 0,control = 0;
 
-    for (int i = 0; i < llParameters.nRetransmissions; i++){
+    for (int i = 0; i <= llParameters.nRetransmissions; i++){
 
         if (writeBytesSerialPort(setFrame, sizeof(setFrame)) < 0) {
             perror("writeBytesSerialPort");
+            closeSerialPort();
             return -1;
         }
 
         alarm(llParameters.timeout);
         alarmEnabled = TRUE;
 
-        if (readControlFrame(&adress,&control) == 0){
-            if (adress==TX && control == uaFrame[2]){
-                alarm(0);
-                alarmEnabled=FALSE;
-                return 0;
+        while (alarmEnabled){
+            if (readControlFrame(&adress,&control) == 0){
+                if (adress==TX && control == uaFrame[2]){
+                    alarm(0);
+                    alarmEnabled=FALSE;
+                    expectedFrame = I0;
+                    return 0;
+                }
             }
-        }        
+        }
         
     }
 
+    alarm(0);
+    alarmEnabled = FALSE;
+    closeSerialPort();
     return -1;
 }
 
@@ -169,19 +176,20 @@ int llOpenRx(LinkLayer llParameters){
 
     unsigned char adress = 0,control = 0;
 
-    if (readControlFrame(&adress, &control) == 0) {
-        if (adress==setFrame[1] && control == setFrame[2]){
-            if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
-                perror("writeBytesSerialPort");
-                return -1;
-            }
-            expectedFrame = I0;
-            return 0;
+    while (adress != setFrame[1] || control != setFrame[2]){
+        if (readControlFrame(&adress, &control) != 0) {
+            closeSerialPort();
+            return -1;
         }
-        printf("Unexpected control frame received\n");
     }
 
-    return -1;
+    if (writeBytesSerialPort(uaFrame, sizeof(uaFrame)) < 0) {
+        perror("writeBytesSerialPort");
+        closeSerialPort();
+        return -1;
+    }
+    expectedFrame = I0;
+    return 0;
 }
 
 ////////////////////////////////////////////////
@@ -189,7 +197,7 @@ int llOpenRx(LinkLayer llParameters){
 ////////////////////////////////////////////////
 int llSend(const unsigned char *buf, int bufSize){
     
-    unsigned char frame [2 * bufSize + 6]; 
+    unsigned char frame [2 * bufSize + 7]; 
 
     frame[0] = FLAG;
     frame[1] = TX;
@@ -230,7 +238,7 @@ int llSend(const unsigned char *buf, int bufSize){
     unsigned char expectedRR  = expectedFrame == I0 ? RR1 : RR0;
     unsigned char expectedREJ = expectedFrame == I0 ? REJ0 : REJ1;
     
-    for (int i = 0; i < linkConfig.nRetransmissions; i++){
+    for (int i = 0; i <= linkConfig.nRetransmissions; i++){
 
         if (writeBytesSerialPort(frame, frameSize) < 0) {
             perror("writeBytesSerialPort");
@@ -278,6 +286,7 @@ int llReceive(unsigned char *packet){
     unsigned char address, control, bcc2 = 0x00;
     unsigned char xor = 0x00, prev_xor = 0x00;
     bool escaped = false, dataError = false;
+    unsigned char dup, curRR, curREJ;
     int atual = 0;
     unsigned char response[5];
 
@@ -355,6 +364,9 @@ int llReceive(unsigned char *packet){
                     state = DATA;
                     escaped = FALSE;
                     dataError = false;
+                    dup = expectedFrame == I0 ? RR0 : RR1;
+                    curRR = expectedFrame == I0 ? RR1 : RR0;
+                    curREJ = (control == I0) ? REJ0 : REJ1;
                     if (byte == ESC) escaped = TRUE;
                     else {
                         packet[atual] = byte;
@@ -377,25 +389,22 @@ int llReceive(unsigned char *packet){
                     // duplicado
                     if (expectedFrame != control) {
                         printf("llReceive: Duplicate frame received\n");
-                        unsigned char c = expectedFrame == I0 ? RR0 : RR1;
-                        if (build_frame(response, TX, c) < 0) {
+                        if (build_frame(response, TX, dup) < 0) {
                             perror("writeBytesSerialPort");
                             return -1;
                         }
                         state = START;
                         break;
                     }
-                    if (!escaped && !dataError && atual <= MAX_PAYLOAD_SIZE && xor == bcc2) {
+                    if (!escaped && !dataError && xor == bcc2) {
                         printf("llReceive: Frame received successfully\n");
-                        unsigned char c = expectedFrame == I0 ? RR1 : RR0;
-                        if (build_frame(response, TX, c) < 0) {
+                        if (build_frame(response, TX, curRR) < 0) {
                             perror("writeBytesSerialPort");
                             return -1;
                         }
                         expectedFrame = expectedFrame == I0 ? I1 : I0;
                         return atual;
                     } else { // rejeitado
-                        unsigned char curREJ = (control == I0) ? REJ0 : REJ1;
                         if (build_frame(response, TX, curREJ) < 0) {
                             perror("writeBytesSerialPort");
                             return -1;
@@ -433,6 +442,21 @@ int llReceive(unsigned char *packet){
                         atual++;
                     }
                 }
+
+                if (atual > MAX_PAYLOAD_SIZE + 1) { // Flag perdida
+                    if (expectedFrame != control) { // duplicado
+                        if (build_frame(response, TX, dup) < 0) {
+                            perror("writeBytesSerialPort");
+                            return -1;
+                        }
+                    } else { // rejeitado
+                        if (build_frame(response, TX, curREJ) < 0) {
+                            perror("writeBytesSerialPort");
+                            return -1;
+                        }
+                    }
+                    state = START;
+                }
                 break;
 
             default:
@@ -451,36 +475,51 @@ int llCloseTx(){
     unsigned char discFrame[5] = {FLAG,TX,DISC,TX ^ DISC,FLAG};
 
     unsigned char adress = 0,control = 0;
+    bool discReceived = false;
     
-    for (int i = 0; i < linkConfig.nRetransmissions; i++){
+    for (int i = 0; i <= linkConfig.nRetransmissions; i++){
 
+        if (discReceived) break;
+        
         if (writeBytesSerialPort(discFrame, 5) < 0){
             perror("writeBytesSerialPort");
+            closeSerialPort();
             return -1;
         }
 
         alarm(linkConfig.timeout);
         alarmEnabled = TRUE;
 
-        if (readControlFrame(&adress, &control) == 0){
-            if (adress==RX && control == DISC){
-                unsigned char ua_frame[5] = {FLAG,RX,UA,RX ^ uaFrame[2],FLAG};
-                if (writeBytesSerialPort(ua_frame, 5) < 0){
-                    perror("writeBytesSerialPort");
-                    return -1;
+        while (alarmEnabled){
+            if (readControlFrame(&adress, &control) == 0){
+                if (adress==RX && control == DISC){
+                    unsigned char ua_frame[5] = {FLAG,RX,UA,RX ^ uaFrame[2],FLAG};
+                    if (writeBytesSerialPort(ua_frame, 5) < 0){
+                        perror("writeBytesSerialPort");
+                        alarm(0);
+                        alarmEnabled = FALSE;
+                        closeSerialPort();
+                        return -1;
+                    }
+                    alarm(0);
+                    alarmEnabled = FALSE;
+                    discReceived = true;
+                    break;
                 }
-                alarm(0);
-                alarmEnabled = FALSE;
-                break;
             }
         }          
     
     }
+
+    alarm(0);
+    alarmEnabled = FALSE;
     
     if (closeSerialPort() < 0){
         perror("closeSerialPort");
         return -1;
     }
+
+    if (!discReceived) return -1;
 
     printf("Serial port closed\n");
     return 0;
