@@ -516,7 +516,7 @@ int llCloseTx(){
 
     alarm(0);
     alarmEnabled = FALSE;
-    usleep(50000);//no mundo real, tem de haver este delay, para a serial port nao fechar antes de os bytes serem enviados
+    sleep(1);//no mundo real, tem de haver este delay, para a serial port nao fechar antes de os bytes serem enviados
 
     if (closeSerialPort() < 0){
         perror("closeSerialPort");
