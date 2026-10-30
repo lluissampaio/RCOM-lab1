@@ -496,7 +496,7 @@ int llCloseTx(){
         while (alarmEnabled){
             if (readControlFrame(&adress, &control) == 0){
                 if (adress==RX && control == DISC){
-                    unsigned char ua_frame[5] = {FLAG,RX,UA,RX ^ uaFrame[2],FLAG};
+                    unsigned char ua_frame[5] = {FLAG,RX,UA,RX ^ UA,FLAG};
                     if (writeBytesSerialPort(ua_frame, 5) < 0){
                         perror("writeBytesSerialPort");
                         alarm(0);
@@ -516,7 +516,8 @@ int llCloseTx(){
 
     alarm(0);
     alarmEnabled = FALSE;
-    
+    usleep(50000);//no mundo real, tem de haver este delay, para a serial port nao fechar antes de os bytes serem enviados
+
     if (closeSerialPort() < 0){
         perror("closeSerialPort");
         return -1;
