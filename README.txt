@@ -39,3 +39,16 @@ Instructions to Run the Project
     5.1. Run receiver and transmitter again
     5.2. Quickly move to the cable program console and disable the connection and/or add noise. Check the instructions printed at the start of the program.
     5.3. Check if the file received matches the file sent, even with cable disconnections or with noise
+
+Additional Protocol Details & Edge Cases Implemented
+----------------------------------------------------
+
+1. Lost UA Frame During Connection Establishment (SET inside llReceive):
+   If the UA frame sent by the receiver in llOpenRx is lost or corrupted, the receiver moves on to llReceive while the transmitter times out in llOpenTx and retransmits SET. To prevent a deadlock, llReceive accepts SET control frames, resends the UA response, and returns to the START state to await Information frames.
+
+2. Early Connection Termination by Transmitter (DISC inside llReceive):
+   If the transmitter aborts mid-transfer (e.g., after exhausting retransmissions on a data packet or encountering a file read error) and calls llCloseTx(), the receiver would otherwise remain blocked in llReceive waiting for data packets. To handle this gracefully, llReceive detects DISC frames, replies with DISC, waits for the final UA, closes the serial port, and returns -2 so the application layer can clean up resources and exit cleanly.
+
+3. Corrupted Closing FLAG in Information Frames (atual > MAX_PAYLOAD_SIZE + 1):
+   If noise corrupts the closing FLAG of an I frame, the receiver would remain in the DATA state and mistakenly consume the opening FLAG of the next retransmitted frame as the closing FLAG of the corrupted one. By checking if the number of unstuffed bytes read in DATA exceeds MAX_PAYLOAD_SIZE + 1 (payload + BCC2), llReceive immediately replies with REJ (or RR if duplicate) and resets the state machine to START before the next frame arrives.
+
